@@ -67,7 +67,10 @@ void PopulateTokenMap()
 
   DEFINEKEYWORD("int", TOKEN_INT);
   DEFINEKEYWORD("float", TOKEN_FLOAT);
+  DEFINEKEYWORD("string", TOKEN_STRING);
+  DEFINEKEYWORD("void", TOKEN_VOID);
   DEFINEKEYWORD("#include", TOKEN_INCLUDE);
+  DEFINEKEYWORD("asm", TOKEN_ASM);
 
   populated = true;
 }
@@ -89,7 +92,9 @@ bool TokenIsMathOp(TokenType type)
 bool TokenIsDataType(TokenType type)
 {
   if(type == TOKEN_INT ||
-     type == TOKEN_FLOAT
+     type == TOKEN_FLOAT ||
+     type == TOKEN_STRING ||
+     type == TOKEN_VOID
     )
   {
     return true;

@@ -45,12 +45,15 @@ typedef struct _VariableInfo
   TokenType type;
   char *name;
   int codeIndex;
-  ~_VariableInfo() { delete[] name; }
+  void Dealloc()
+  { 
+    if( name != NULL) { delete[] name; name = NULL; } 
+  }
 } VariableInfo;
 
 bool lastCompileWasError = false;
 
-void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, vector<VariableInfo> localSymbols);
+void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, vector<VariableInfo> *localSymbols);
 void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength);
 void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols);
 void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols, bool stopAfterOne);
@@ -82,6 +85,14 @@ vector<char> PreProcessCode(const char *code)
 {
   int codeLen = strlen(code);
   vector<char> newCode;
+
+  const char *helpers = "void printf(string str) { asm INST_PRINT; } \n";
+  for(int i1 = 0; i1 < strlen(helpers)+1; i1++)
+  {
+    if(helpers[i1] == '\0') continue;
+    newCode.push_back(helpers[i1]);
+  }
+  
   bool inComment = false;
   for(int i1 = 0; i1 < codeLen; i1++)
   {
@@ -102,6 +113,7 @@ vector<char> PreProcessCode(const char *code)
 
     newCode.push_back(code[i1]);
   }
+  newCode.push_back('\0');
   return newCode;
 }
 
@@ -109,11 +121,14 @@ Token CreateToken(const char *ptr)
 {
   Token result;
   result.padding = 0;
-  while(isspace(*ptr))
+  result.type = TOKEN_INVALID;
+  while(isspace(*ptr) || *ptr == '\n' || *ptr == '\r')
   {
     ptr++;
     result.padding++;
   }
+  if(*ptr == '\0') return result;
+
   if(AnyWhereTokens.contains(ptr))
   {
     if(AnyWhereTokens[ptr] == TOKEN_QUOTE)
@@ -122,7 +137,7 @@ Token CreateToken(const char *ptr)
       const char *tptr = ptr + 1;
       while((*tptr != '\"' && *tptr != '\0') || ((*tptr == '\"' && (*(tptr - 1) == '\\')))) tptr++;
       if(*tptr == '\0') SyntaxError("No ending quote");
-      result.type = TOKEN_STRING;
+      result.type = TOKEN_CONSTSTRING;
       result.str = ptr;
       result.length = tptr - ptr + 1; //include end quote
       return result;
@@ -167,6 +182,7 @@ vector<Token> Tokenize(const char *code)
   for(int i1 = 0; i1 < codeLen; )
   {
     Token token = CreateToken(&code[i1]);
+    if(token.type == TOKEN_INVALID) break;
     result.push_back(token);
     i1 += token.length + token.padding;
   }
@@ -196,7 +212,7 @@ vector<char> CompileStatement(vector<Token> statement)
 
 }
 
-static inline bool VariableDeclared(vector<VariableInfo> &lst, VariableInfo info)
+static inline bool VariableDeclared(vector<VariableInfo> &lst, VariableInfo &info)
 {
   for(int i1 = 0; i1 < lst.size(); i1++)
   {
@@ -306,7 +322,15 @@ bool HandleFunctionDeclaration(char **bytecode, int *bytecodeLength, int *workin
 
   //POP ARGS OFF STACK FOR DEFINING LOCAL SYMBOLS, MAYBE ADD PARAMETER FOR COMPILECODEINTERNAL
 
-  CompileCodeInternal(bytecode, bytecodeLength, workingOffset, tokens + startOffset, totalTokens, vector<VariableInfo>()); //define a vector for variables
+  vector<VariableInfo> stackVars;
+
+  CompileCodeInternal(bytecode, bytecodeLength, workingOffset, tokens + startOffset, totalTokens, &stackVars);
+
+  for(int i1 = 0; i1 < stackVars.size(); i1++)
+  {
+    stackVars[i1].Dealloc();
+  }
+  stackVars.clear();
 
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 4);
   (*bytecode)[(*workingOffset)++] = INST_POPFRAME;
@@ -342,7 +366,7 @@ bool HandleVariableAssignment(char **bytecode, int *bytecodeLength, int *working
 
   int totalTokens = 0;
   bool foundEnd = false;
-  for(int i1 = 0; i1 < tokenLength; i1++)
+  for(int i1 = 2; i1 < tokenLength; i1++)
   {
     totalTokens++;
     if(tokens[i1].type == TOKEN_ENDSTATEMENT)
@@ -353,7 +377,7 @@ bool HandleVariableAssignment(char **bytecode, int *bytecodeLength, int *working
   }
   if(!foundEnd) SyntaxError("No end to assignment");
 
-  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens, totalTokens, consumedTokens, localSymbols);
+  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + 2, totalTokens, consumedTokens, localSymbols);
 
   unsigned char idx = (unsigned char)LookupVariableIndex(*localSymbols, name);
 
@@ -389,6 +413,9 @@ bool HandleFunctionCall(char **bytecode, int *bytecodeLength, int *workingOffset
     if(tokens[i1].type == TOKEN_RIGHTPAREN)
     {
       (*consumedTokens)++;
+      if(runningTokens == 0) break;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - runningTokens], runningTokens, consumedTokens, localSymbols); //will push on stack
+      runningTokens = 0;
       break;
     }
     else if(tokens[i1].type == TOKEN_COMMA)
@@ -433,9 +460,9 @@ bool HandleVariableDeclaration(char **bytecode, int *bytecodeLength, int *workin
 
   VariableInfo var;
   var.type = tokens[0].type;
-  char *name = new char[tokens[0].length+1];
-  strncpy(name, tokens[0].str, tokens[0].length);
-  name[tokens[0].length] = '\0';
+  char *name = new char[tokens[1].length+1];
+  strncpy(name, tokens[1].str, tokens[1].length);
+  name[tokens[1].length] = '\0';
   var.name = name;
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 4);
   var.codeIndex = *workingOffset;
@@ -507,7 +534,7 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
     {
       //get expression following this one
       CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + i1 + 1, tokenLength, consumedTokens, localSymbols, true); //stop after one
-      INST mathOp;
+      char mathOp;
       switch(tokens[i1].type) //RIGHT NOW THIS ONLY DOES SIGNED INTS
       {
         case TOKEN_PLUS:
@@ -529,7 +556,7 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
       PrepareForWrite(bytecode, bytecodeLength, workingOffset, 2);
       (*bytecode)[(*workingOffset)++] = mathOp;
     }
-    else if(tokens[i1].type == TOKEN_STRING)
+    else if(tokens[i1].type == TOKEN_CONSTSTRING)
     {
       char *str = new char[tokens[i1].length+1];
       strncpy(str, tokens[i1].str, tokens[i1].length);
@@ -558,32 +585,86 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
   }
 }
 
-void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, vector<VariableInfo> localSymbols)
+bool HandleAsmStatement(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols)
+{
+  if(tokens[0].type != TOKEN_ASM) return false;
+
+  char temp[32];
+  strncpy(temp, tokens[1].str, tokens[1].length);
+  temp[tokens[1].length] = '\0';
+
+  (*consumedTokens) += 2;
+
+  char inst = GetInstructionByName(temp);
+
+  if(inst == 0) SyntaxError("Invalid instruction in asm statement");
+
+  bool foundEnd = false;
+  int totalTokens = 0;
+  for(int i1 = 2; i1 < tokenLength; i1++)
+  {
+    if(tokens[i1].type == TOKEN_ENDSTATEMENT)
+    {
+      foundEnd = true;
+      (*consumedTokens)++;
+      if(totalTokens == 0) break;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, localSymbols); //will push on stack
+      totalTokens = 0;
+      break;
+    }
+    else if(tokens[i1].type == TOKEN_COMMA)
+    {
+      (*consumedTokens)++;
+      if(totalTokens == 0) SyntaxError("No argument specified");
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, localSymbols); //will push on stack
+      totalTokens = 0;
+    }
+    totalTokens++;
+  }
+  if(!foundEnd) SyntaxError("No end to asm statement found");
+
+  PrepareForWrite(bytecode, bytecodeLength, workingOffset, 10);
+  (*bytecode)[(*workingOffset)++] = inst;
+
+  return true;
+}
+
+void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, vector<VariableInfo> *localSymbols)
 {
   //index of local symbol is address
   for(int i1 = 0; i1 < tokenLength; /*i1++*/)
   {
-    if(tokens[i1].type == TOKEN_ENDSTATEMENT) continue;
+    if(tokens[i1].type == TOKEN_ENDSTATEMENT) 
+    {
+      i1++;
+      continue;
+    }
 
     int consumedTokens = 0;
     bool handled = false;
     handled = HandleFunctionDeclaration(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens);
-    if(!handled) handled = HandleVariableDeclaration(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, &localSymbols);
-    if(!handled) handled = HandleVariableAssignment(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, &localSymbols);
+    if(!handled) handled = HandleFunctionCall(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
+    if(!handled) handled = HandleVariableDeclaration(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
+    if(!handled) handled = HandleVariableAssignment(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
+    if(!handled) handled = HandleAsmStatement(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
 
-
-    if(consumedTokens == 0) break;
+    if(consumedTokens == 0) consumedTokens++; //nothing was consumed, but keep moving forward
     i1 += consumedTokens;
   }
 }
 
 void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength)
 {
-  CompileCodeInternal(bytecode, bytecodeLength, workingOffset, tokens, tokenLength, vector<VariableInfo>());
+  vector<VariableInfo> junk;
+  CompileCodeInternal(bytecode, bytecodeLength, workingOffset, tokens, tokenLength, &junk);
+  for(int i1 = 0; i1 < junk.size(); i1++)
+    junk[i1].Dealloc();
+  junk.clear();
 }
 
 char *CompileToBytecode(vector<Token> &tokens, int *outputLength)
 {
+  //STILL NEED TO PREPROCESS
 #define INITIALCODESIZE 128
   char *bytecode = new char[INITIALCODESIZE];
   int bytecodeLength = INITIALCODESIZE;
@@ -629,12 +710,16 @@ char *CompileToBytecode(vector<Token> &tokens, int *outputLength)
 int main()
 {
   PopulateTokenMap();
-  char code[256];
+  char code[1024];
   printf("Enter text to compile: ");
-  fgets(code, 256, stdin);
+  fgets(code, 1024, stdin);
   if((strlen(code)>0) && (code[strlen(code) - 1] == '\n'))
     code[strlen(code) - 1] = '\0';
-  vector<Token> tokens = Tokenize(code);
+
+  vector<char> vec = PreProcessCode(code);
+
+  vector<Token> tokens = Tokenize(&vec[0]);
+
   for(int i1 = 0; i1 < tokens.size(); i1++)
   {
     PrintToken(tokens[i1], code);
@@ -647,6 +732,18 @@ int main()
   {
     printf("%02x", bytecode[i1]);
   }
+  printf("\nWould you like to execute this code (y/n)? ");
+  char c;
+  scanf(" %c", &c);
+  printf("\n");
+  if(c == 'y')
+  {
+    VM vm;
+    vm.execute(bytecode, length);
+  }
+  delete[] bytecode;
+  int junk;
+  scanf("%d\n", &junk);
   return 0;
 }
 

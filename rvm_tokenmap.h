@@ -15,7 +15,10 @@ enum TokenType
 {
   TOKEN_INT = 1,
   TOKEN_FLOAT,
+  TOKEN_STRING,
+  TOKEN_VOID,
   TOKEN_INCLUDE,
+  TOKEN_ASM,
 
   TOKEN_SYMBOL,
 
@@ -32,9 +35,10 @@ enum TokenType
   TOKEN_COMMA,
   TOKEN_ASSIGNMENT,
 
-  TOKEN_STRING,
-  TOKEN_NUMBER
+  TOKEN_CONSTSTRING,
+  TOKEN_NUMBER,
 
+  TOKEN_INVALID
 };
 
 template <class K, class V>
