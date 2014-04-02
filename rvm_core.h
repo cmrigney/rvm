@@ -62,6 +62,7 @@ INSTRUCTION(INST_PUSHA      , 0x16) //push from an address
 INSTRUCTION(INST_POPA       , 0x17) //pop into an address
 INSTRUCTION(INST_PUSHC      , 0x18) //global constants
 INSTRUCTION(INST_PUSHVAR    , 0x19) //puts a variable on the stack frame
+INSTRUCTION(INST_CONCATSTRINGSTRING, 0x1A);
 
 //END INST
 

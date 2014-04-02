@@ -54,8 +54,8 @@ bool lastCompileWasError = false;
 
 void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, vector<VariableInfo> *localSymbols);
 void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength);
-void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols);
-void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols, bool stopAfterOne);
+void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, TokenType *resultingType, vector<VariableInfo> *localSymbols);
+void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, TokenType *resultingType, vector<VariableInfo> *localSymbols, bool stopAfterOne);
 
 bool compareStringsMap(char *a, char *b)
 {
@@ -72,6 +72,15 @@ ExactMap<int, char*> jmpToFill(compareIntsMap);
 vector<FunctionSig> symbolDefines;
 
 ExactMap<int, char*> stringsToFill(compareIntsMap);
+
+static inline FunctionSig *LookupFunctionSig(const char *name)
+{
+  for(int i1 = 0; i1 < symbolDefines.size(); i1++)
+  {
+    if(strncmp(symbolDefines[i1].symbolToken.str, name, symbolDefines[i1].symbolToken.length) == 0) return &symbolDefines[i1];
+  }
+  return NULL;
+}
 
 void SyntaxError(const char* error)
 {
@@ -392,7 +401,7 @@ bool HandleVariableAssignment(char **bytecode, int *bytecodeLength, int *working
   }
   if(!foundEnd) SyntaxError("No end to assignment");
 
-  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + 2, totalTokens, consumedTokens, localSymbols);
+  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + 2, totalTokens, consumedTokens, &info->type, localSymbols);
 
   unsigned char idx = (unsigned char)LookupVariableIndex(*localSymbols, name);
 
@@ -420,16 +429,21 @@ bool HandleFunctionCall(char **bytecode, int *bytecodeLength, int *workingOffset
 {
   if(!IsFunctionCall(tokens, tokenLength)) return false;
 
+  FunctionSig *sig;
+  if(!(sig = LookupFunctionSig(tokens[0].str))) SyntaxError("Call to undefined symbol"); //safe because LookupFunctionSig uses length of stored symbols, not arg passed
+
   (*consumedTokens) += 2;
 
   int runningTokens = 0;
+  int currentArg = 0;
   for(int i1 = 2; i1 < tokenLength; i1++)
   {
     if(tokens[i1].type == TOKEN_RIGHTPAREN)
     {
       (*consumedTokens)++;
       if(runningTokens == 0) break;
-      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - runningTokens], runningTokens, consumedTokens, localSymbols); //will push on stack
+      if(currentArg >= sig->argTokens.size()) SyntaxError("Too many arguments for function");
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - runningTokens], runningTokens, consumedTokens, &(sig->argTypeTokens[currentArg].type), localSymbols); //will push on stack
       runningTokens = 0;
       break;
     }
@@ -437,11 +451,15 @@ bool HandleFunctionCall(char **bytecode, int *bytecodeLength, int *workingOffset
     {
       (*consumedTokens)++;
       if(runningTokens == 0) SyntaxError("No argument specified");
-      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - runningTokens], runningTokens, consumedTokens, localSymbols); //will push on stack
+      if(currentArg >= sig->argTokens.size()) SyntaxError("Too many arguments for function");
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - runningTokens], runningTokens, consumedTokens, &(sig->argTypeTokens[currentArg].type), localSymbols); //will push on stack
       runningTokens = 0;
+      currentArg++;
     }
     runningTokens++;
   }
+
+  if(currentArg != (int)(sig->argTokens.size() - 1)) SyntaxError("Too few arguments to function");
 
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
   (*bytecode)[(*workingOffset)++] = INST_JMP;
@@ -496,14 +514,17 @@ bool HandleVariableDeclaration(char **bytecode, int *bytecodeLength, int *workin
 }
 
 
-void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols)
+void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, TokenType *resultingType, vector<VariableInfo> *localSymbols)
 {
-  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens, tokenLength, consumedTokens, localSymbols, false);
+  CompileExpression(bytecode, bytecodeLength, workingOffset, tokens, tokenLength, consumedTokens, resultingType, localSymbols, false);
 }
 
-void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols, bool stopAfterOne)
+void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, TokenType *resultingType, vector<VariableInfo> *localSymbols, bool stopAfterOne)
 {
   if(tokenLength == 0) SyntaxError("Invalid expression.  Cannot be empty");
+
+  //IF RESULTING TYPE IS NOT TOKEN_INVALID THEN WE MUST TRY TO CONVERT OUR EXPRESSION TO THAT TYPE
+
 
   for(int i1 = 0; i1 < tokenLength; i1++)
   {
@@ -528,7 +549,8 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
       }
       if(i2 == tokenLength) SyntaxError("No end parenthesis in expression");
       totalToks -= 2; //since we don't want end parens
-      CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + i1 + 1, totalToks, consumedTokens, localSymbols);
+      TokenType dataType = TOKEN_INVALID;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + i1 + 1, totalToks, consumedTokens, &dataType, localSymbols);
       (*consumedTokens)++; //for end paren
     }
     else if(tokens[i1].type == TOKEN_NUMBER) //someday change this to a const instead of always pushing //ALSO THIS ALWAYS ASSUMES INT FOR NOW
@@ -541,11 +563,17 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
       int number = atoi(temp);
       INT2BYTES(number, &((*bytecode)[*workingOffset]));
       (*workingOffset) += 4;
+
+      if(*resultingType == TOKEN_INVALID)
+      {
+        (*resultingType) = TOKEN_INT;
+      }
     }
     else if(TokenIsMathOp(tokens[i1].type)) //NEED TO CONSIDER ORDER OF OPERATIONS
     {
       //get expression following this one
-      CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + i1 + 1, tokenLength, consumedTokens, localSymbols, true); //stop after one
+      TokenType dataType = TOKEN_INVALID;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, tokens + i1 + 1, tokenLength, consumedTokens, &dataType, localSymbols, true); //stop after one
       char mathOp;
       switch(tokens[i1].type) //RIGHT NOW THIS ONLY DOES SIGNED INTS
       {
@@ -595,6 +623,11 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
       (*bytecode)[(*workingOffset)++] = INST_PUSHC;
       stringsToFill.set(*workingOffset, str);
       (*workingOffset) += 4;
+
+      if(*resultingType == TOKEN_INVALID)
+      {
+        (*resultingType) = TOKEN_STRING;
+      }
     }
     else if(tokens[i1].type == TOKEN_SYMBOL)
     {
@@ -607,6 +640,11 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
       PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
       (*bytecode)[(*workingOffset)++] = INST_PUSHA;
       (*bytecode)[(*workingOffset)++] = *(char*)&idx;
+
+      if(*resultingType == TOKEN_INVALID)
+      {
+        (*resultingType) = info->type;
+      }
     }
     else
     {
@@ -638,7 +676,8 @@ bool HandleAsmStatement(char **bytecode, int *bytecodeLength, int *workingOffset
       foundEnd = true;
       (*consumedTokens)++;
       if(totalTokens == 0) break;
-      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, localSymbols); //will push on stack
+      TokenType dataType = TOKEN_INVALID;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, &dataType, localSymbols); //will push on stack
       totalTokens = 0;
       break;
     }
@@ -646,7 +685,8 @@ bool HandleAsmStatement(char **bytecode, int *bytecodeLength, int *workingOffset
     {
       (*consumedTokens)++;
       if(totalTokens == 0) SyntaxError("No argument specified");
-      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, localSymbols); //will push on stack
+      TokenType dataType = TOKEN_INVALID;
+      CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[i1 - totalTokens], totalTokens, consumedTokens, &dataType, localSymbols); //will push on stack
       totalTokens = 0;
     }
     totalTokens++;
