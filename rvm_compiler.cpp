@@ -44,7 +44,6 @@ typedef struct _VariableInfo
 {
   TokenType type;
   char *name;
-  int codeIndex;
   void Dealloc()
   { 
     if( name != NULL) { delete[] name; name = NULL; } 
@@ -86,7 +85,7 @@ vector<char> PreProcessCode(const char *code)
   int codeLen = strlen(code);
   vector<char> newCode;
 
-  const char *helpers = "void printf(string str) { asm INST_PRINT; } \n";
+  const char *helpers = "void printf(string str) { asm INST_PRINT str; } \n";
   for(int i1 = 0; i1 < strlen(helpers)+1; i1++)
   {
     if(helpers[i1] == '\0') continue;
@@ -320,9 +319,25 @@ bool HandleFunctionDeclaration(char **bytecode, int *bytecodeLength, int *workin
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 4);
   (*bytecode)[(*workingOffset)++] = INST_PUSHFRAME;
 
-  //POP ARGS OFF STACK FOR DEFINING LOCAL SYMBOLS, MAYBE ADD PARAMETER FOR COMPILECODEINTERNAL
-
   vector<VariableInfo> stackVars;
+
+  for(int i1 = args.size() - 1; i1 >= 0; i1--) //need to go backwards for loading onto stack
+  {
+    char *name = new char[args[i1].length + 1];
+    strncpy(name, args[i1].str, args[i1].length);
+    name[args[i1].length] = '\0';
+    VariableInfo info;
+    info.name = name;
+    info.type = argTypes[i1].type;
+
+    stackVars.push_back(info);
+
+    unsigned char idx = (unsigned char)stackVars.size() - 1;
+    PrepareForWrite(bytecode, bytecodeLength, workingOffset, 4);
+    (*bytecode)[(*workingOffset)++] = INST_PUSHVAR;
+    (*bytecode)[(*workingOffset)++] = INST_POPA; //put a stack var on and pop the value into it
+    (*bytecode)[(*workingOffset)++] = *(char*)&idx;
+  }
 
   CompileCodeInternal(bytecode, bytecodeLength, workingOffset, tokens + startOffset, totalTokens, &stackVars);
 
@@ -465,11 +480,8 @@ bool HandleVariableDeclaration(char **bytecode, int *bytecodeLength, int *workin
   name[tokens[1].length] = '\0';
   var.name = name;
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 4);
-  var.codeIndex = *workingOffset;
   if(VariableDeclared(*localSymbols, var)) SyntaxError("Variable declared more than once");
-/*
-  (*workingOffset) += 4; //for 4 byte variable lengths //don't put this in code
-*/
+
   localSymbols->push_back(var);
   (*bytecode)[(*workingOffset)++] = INST_PUSHVAR;
 
@@ -558,9 +570,27 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
     }
     else if(tokens[i1].type == TOKEN_CONSTSTRING)
     {
-      char *str = new char[tokens[i1].length+1];
-      strncpy(str, tokens[i1].str, tokens[i1].length);
-      str[tokens[i1].length] = '\0';
+      vector<char> processedString;
+      for(int i2 = 1; i2 < tokens[i1].length - 1; i2++) //skip first and last quote
+      {
+        if(tokens[i1].str[i2] == '\\')
+        {
+          int len;
+          char c = ProcessEscape(&(tokens[i1].str[i2]), &len);
+          processedString.push_back(c);
+          i2 += len;
+        }
+        else
+        {
+          processedString.push_back(tokens[i1].str[i2]);
+        }
+      }
+      char *str = new char[processedString.size() + 1];
+      if(processedString.size() > 0) //DO THIS CHECK FOR ALL OF strncpy
+      {
+        strncpy(str, &processedString[0], processedString.size());
+      }
+      str[processedString.size()] = '\0';
       PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
       (*bytecode)[(*workingOffset)++] = INST_PUSHC;
       stringsToFill.set(*workingOffset, str);
@@ -684,10 +714,16 @@ char *CompileToBytecode(vector<Token> &tokens, int *outputLength)
 
   //PUT IN HALT
 
-  //FILL IN WHERE FUNCTIONS ARE CALLED, ETC, WITH FILLED IN TABLES, ALSO DELLOCATE TABLES. ALSO THIS WILL TELL IF WE HAVE A MAIN.
   for(int i1 = 0; i1 < jmpToFill.size(); i1++)
   {
     pair<int, char*> p = jmpToFill.getAtIndex(i1);
+    if(!symbolLocation.contains(p.second))
+    {
+      char temp[64];
+      strcpy(temp, p.second);
+      strcat(temp, " was not found");
+      SyntaxError(temp); //really a linker error
+    }
     INT2BYTES(symbolLocation[p.second], &bytecode[p.first]);
     delete[] p.second;
   }
@@ -702,6 +738,7 @@ char *CompileToBytecode(vector<Token> &tokens, int *outputLength)
     workingOffset += strlen(p.second) + 1;
     delete[] p.second;
   }
+
 
   *outputLength = bytecodeLength;
   return bytecode;

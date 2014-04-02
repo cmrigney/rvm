@@ -89,6 +89,7 @@ INSTRUCTION(INST_PUSHVAR    , 0x19) //puts a variable on the stack frame
 
 extern int ExpandBytes(char **ptr, int currentLength);
 extern char GetInstructionByName(const char *inst);
+extern char ProcessEscape(const char *str, int *len);
 
 static inline int BYTES2INT(char *c)
 {

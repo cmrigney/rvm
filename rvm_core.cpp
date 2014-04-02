@@ -31,6 +31,16 @@ void ExpandIfNeeded(char **ptr, int *size, int currentLength, int toAdd)
   }
 }
 
+//assumes first char is '\'
+char ProcessEscape(const char *str, int *len)
+{
+  (*len) = 1;
+  if(str[1] == 'n') return '\n';
+  else if(str[1] == 'r') return '\r';
+  else if(str[1] == 't') return '\t';
+  else return str[1];
+}
+
 void VM::push(int value)
 {
   if(stackSize >= MAX_STACK) throw runtime_error("Stack Overflow Exception");
@@ -133,10 +143,6 @@ void VM::execute(char *bytecode, int size)
       }
       case INST_POPFRAME:
       {
-        FrameHeader *header = (FrameHeader*)currentFrame;
-        instPtr = header->savedPtr;
-        currentFrame = header->prevFrame;
-        currentFrameSize = header->savedSize;
         if(currentFrame == stackFrame)
         {
           //end execution
@@ -144,6 +150,10 @@ void VM::execute(char *bytecode, int size)
           return;
         }
 
+        FrameHeader *header = (FrameHeader*)currentFrame;
+        instPtr = header->savedPtr;
+        currentFrame = header->prevFrame;
+        currentFrameSize = header->savedSize;
         break;
       }
       case INST_PUSHVAR:
