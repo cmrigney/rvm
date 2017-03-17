@@ -65,8 +65,11 @@ void VM::execute(char *bytecode, int size)
   beforeJmpPtr = NULL;
   instPtr = bytecode; //place at beginning
 
+  int cycles = 0;
+
   while(instPtr >= bytecode && instPtr < bytecode + size)
   {
+    cycles++;
     char instruction = *instPtr;
     switch(instruction)
     {
@@ -86,7 +89,7 @@ void VM::execute(char *bytecode, int size)
       case INST_PUSHA: //on stack
       {
         int addr = (int)*((unsigned char*)(instPtr+1)); //actually a unsigned char
-        int value = BYTES2INT(currentFrame+sizeof(FrameHeader)+addr);
+        int value = BYTES2INT(currentFrame+sizeof(FrameHeader)+(addr*4));
         instPtr += 2;
         push(value);
         break;
@@ -96,7 +99,7 @@ void VM::execute(char *bytecode, int size)
         int addr = (int)*((unsigned char*)(instPtr+1)); //actually a unsigned char
         int value = pop();
         instPtr += 2;
-        INT2BYTES(value, (&currentFrame[sizeof(FrameHeader)+addr]));
+        INT2BYTES(value, (&currentFrame[sizeof(FrameHeader)+(addr*4)]));
         break;
       }
       case INST_PUSHC:
@@ -146,7 +149,7 @@ void VM::execute(char *bytecode, int size)
         if(currentFrame == stackFrame)
         {
           //end execution
-          printf("\nExecution completed\n");
+          printf("\nExecution completed in %d cycles\n", cycles);
           return;
         }
 

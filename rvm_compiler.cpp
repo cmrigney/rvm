@@ -4,6 +4,8 @@
 #include <ctype.h>
 #include <stdexcept>
 #include <vector>
+#include <iostream>
+#include <fstream>
 #include "rvm_core.h"
 #include "rvm_tokenmap.h"
 
@@ -456,10 +458,13 @@ bool HandleFunctionCall(char **bytecode, int *bytecodeLength, int *workingOffset
       runningTokens = 0;
       currentArg++;
     }
-    runningTokens++;
+    else
+    {
+      runningTokens++;
+    }
   }
 
-  if(currentArg != (int)(sig->argTokens.size() - 1)) SyntaxError("Too few arguments to function");
+  if(sig->argTokens.size() > 0 && currentArg != (int)(sig->argTokens.size() - 1)) SyntaxError("Too few arguments to function");
 
   PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
   (*bytecode)[(*workingOffset)++] = INST_JMP;
@@ -631,25 +636,73 @@ void CompileExpression(char **bytecode, int *bytecodeLength, int *workingOffset,
     }
     else if(tokens[i1].type == TOKEN_SYMBOL)
     {
-      char temp[32];
-      strncpy(temp, tokens[i1].str, tokens[i1].length);
-      temp[tokens[i1].length] = '\0';
-      VariableInfo *info = LookupVariable(*localSymbols, temp);
-      if(info == NULL) SyntaxError("Undefined symbol in expression");
-      unsigned char idx = (unsigned char)LookupVariableIndex(*localSymbols, temp);
-      PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
-      (*bytecode)[(*workingOffset)++] = INST_PUSHA;
-      (*bytecode)[(*workingOffset)++] = *(char*)&idx;
-
-      if(*resultingType == TOKEN_INVALID)
+      int consumedBefore = (*consumedTokens);
+      if(HandleFunctionCall(bytecode, bytecodeLength, workingOffset, &tokens[i1], tokenLength - i1, consumedTokens, localSymbols))
       {
-        (*resultingType) = info->type;
+        FunctionSig *fsig = LookupFunctionSig(tokens[i1].str);
+        if((tokens[i1-1].type == TOKEN_ENDSTATEMENT || tokens[i1-1].type == TOKEN_LEFTBRACKET) && fsig->returnToken.type != TOKEN_VOID)
+        {
+          (*bytecode)[(*workingOffset)++] = INST_POP; //for those that return something but it's not used.  Just get rid of it.
+        }
+        (*consumedTokens)--;
+        i1 += (*consumedTokens - consumedBefore);
+      }
+      else
+      {
+        //must be variable
+        char temp[32];
+        strncpy(temp, tokens[i1].str, tokens[i1].length);
+        temp[tokens[i1].length] = '\0';
+        VariableInfo *info = LookupVariable(*localSymbols, temp);
+        if(info == NULL) SyntaxError("Undefined symbol in expression");
+        unsigned char idx = (unsigned char)LookupVariableIndex(*localSymbols, temp);
+        PrepareForWrite(bytecode, bytecodeLength, workingOffset, 5);
+        (*bytecode)[(*workingOffset)++] = INST_PUSHA;
+        (*bytecode)[(*workingOffset)++] = *(char*)&idx;
+
+        if(*resultingType == TOKEN_INVALID)
+        {
+          (*resultingType) = info->type;
+        }
       }
     }
     else
     {
       SyntaxError("Unrecognized op in expression");
     }
+  }
+}
+
+bool HandleKeywordStatement(char **bytecode, int *bytecodeLength, int *workingOffset, Token *tokens, int tokenLength, int *consumedTokens, vector<VariableInfo> *localSymbols)
+{
+  if(tokens[0].type == TOKEN_RETURN)
+  {
+    (*consumedTokens)++;
+
+    bool foundEnd = false;
+    int totalTokens = 0;
+    for(int i1 = 1; i1 < tokenLength; i1++)
+    {
+      if(tokens[i1].type == TOKEN_ENDSTATEMENT)
+      {
+        TokenType dataType = TOKEN_INVALID;
+        if(totalTokens == 0) break;
+        foundEnd = true;
+        CompileExpression(bytecode, bytecodeLength, workingOffset, &tokens[1], totalTokens, consumedTokens, &dataType, localSymbols);
+        (*consumedTokens)++;
+        break;
+      }
+
+      totalTokens++;
+    }
+    if(!foundEnd) SyntaxError("No end to return statement found");
+
+
+    return true;
+  }
+  else
+  {
+    return false;
   }
 }
 
@@ -717,6 +770,7 @@ void CompileCodeInternal(char **bytecode, int *bytecodeLength, int *workingOffse
     if(!handled) handled = HandleVariableDeclaration(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
     if(!handled) handled = HandleVariableAssignment(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
     if(!handled) handled = HandleAsmStatement(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
+    if(!handled) handled = HandleKeywordStatement(bytecode, bytecodeLength, workingOffset, tokens + i1, tokenLength - i1, &consumedTokens, localSymbols);
 
     if(consumedTokens == 0) consumedTokens++; //nothing was consumed, but keep moving forward
     i1 += consumedTokens;
@@ -780,30 +834,101 @@ char *CompileToBytecode(vector<Token> &tokens, int *outputLength)
   }
 
 
-  *outputLength = bytecodeLength;
+  *outputLength = workingOffset;
   return bytecode;
 }
 
-int main()
+char *readFileByteCode(char *exe, int *length)
+{
+  ifstream file(exe);
+  if(!file.is_open())
+  {
+    printf("File could not be opened\n");
+    system("Pause");
+    return NULL;
+  }
+
+  file.seekg(0, file.end);
+  int filelen = file.tellg();
+  file.seekg(0, file.beg);
+
+  char *code = new char[filelen + 1];
+  file.read(code, filelen);
+
+  *length = filelen;
+  return code;
+}
+
+int main(int argc, char **argv)
 {
   PopulateTokenMap();
-  char code[1024];
-  printf("Enter text to compile: ");
-  fgets(code, 1024, stdin);
+
+  if(argc > 2 && strcmp("-run", argv[1]) == 0)
+  {
+    char *exe = argv[2];
+
+    int length;
+    char *bc = readFileByteCode(exe, &length);
+    if(bc == NULL)
+      return 1;
+
+    VM vm;
+    vm.execute(bc, length);
+
+    delete[] bc;
+
+    int junk;
+    scanf("%d\n", &junk);
+    return 0;
+  }
+
+  char filename[1024];
+  printf("Enter name of file to compile: ");
+  fgets(filename, 1024, stdin);
+
+  if(filename[strlen(filename) - 1] == '\n')
+    filename[strlen(filename) - 1] = '\0';
+
+  ifstream file(filename);
+  if(!file.is_open())
+  {
+    printf("File could not be opened\n");
+    system("Pause");
+    return 0;
+  }
+
+  file.seekg(0, file.end);
+  int filelen = file.tellg();
+  file.seekg(0, file.beg);
+
+  char *code = new char[filelen + 1];
+  file.read(code, filelen);
+
+  code[file.gcount()] = '\0';
+
   if((strlen(code)>0) && (code[strlen(code) - 1] == '\n'))
     code[strlen(code) - 1] = '\0';
 
   vector<char> vec = PreProcessCode(code);
 
   vector<Token> tokens = Tokenize(&vec[0]);
-
+  /*
   for(int i1 = 0; i1 < tokens.size(); i1++)
   {
     PrintToken(tokens[i1], code);
   }
+  */
   printf("Compiling to bytecode...\n");
   int length;
   char *bytecode = CompileToBytecode(tokens, &length);
+  {
+    char outName[1024];
+    strcpy(outName, filename);
+    strcat(outName, ".rexe");
+    ofstream out(outName);
+    out.write(bytecode, length);
+    out.close();
+  }
   printf("0x");
   for(int i1 = 0; i1 < length; i1++)
   {
@@ -819,8 +944,10 @@ int main()
     vm.execute(bytecode, length);
   }
   delete[] bytecode;
-  int junk;
-  scanf("%d\n", &junk);
+  {
+    int junk;
+    scanf("%d\n", &junk);
+  }
   return 0;
 }
 

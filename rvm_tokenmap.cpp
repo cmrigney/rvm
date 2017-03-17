@@ -71,6 +71,7 @@ void PopulateTokenMap()
   DEFINEKEYWORD("void", TOKEN_VOID);
   DEFINEKEYWORD("#include", TOKEN_INCLUDE);
   DEFINEKEYWORD("asm", TOKEN_ASM);
+  DEFINEKEYWORD("return", TOKEN_RETURN);
 
   populated = true;
 }

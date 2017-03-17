@@ -38,7 +38,9 @@ enum TokenType
   TOKEN_CONSTSTRING,
   TOKEN_NUMBER,
 
-  TOKEN_INVALID
+  TOKEN_INVALID,
+
+  TOKEN_RETURN,
 };
 
 template <class K, class V>
